@@ -5,7 +5,7 @@ const LOGO_URL = 'https://raw.githubusercontent.com/Shervinuri/Shervinuri.github
 const MAX_PARTICLES = 7500;
 const MOUSE_RADIUS = 150;
 const PARTICLE_SIZE = 1.8;
-const GAP = 2; // Reduced gap for better text resolution
+const GAP = 2;
 
 interface Particle {
   x: number;
@@ -20,6 +20,7 @@ interface Particle {
 const BioGate: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const isMountedRef = useRef(true);
   
   // Refs for animation loop state (mutable, no re-renders)
   const particlesRef = useRef<Particle[]>([]);
@@ -55,6 +56,9 @@ const BioGate: React.FC = () => {
   });
 
   const initParticles = useCallback((width: number, height: number, ctx: CanvasRenderingContext2D) => {
+    // Safety check to prevent IndexSizeError
+    if (width <= 0 || height <= 0) return;
+
     particlesRef.current = [];
     textPositionsRef.current = [];
 
@@ -65,38 +69,48 @@ const BioGate: React.FC = () => {
     ctx.font = `600 ${fontSize}px "Josefin Sans", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    
+    // Clear before drawing to ensure clean slate
+    ctx.clearRect(0, 0, width, height);
+    
     ctx.fillText('SHΞЯVIN™', width / 2, height / 2);
 
-    const textImageData = ctx.getImageData(0, 0, width, height);
-    ctx.clearRect(0, 0, width, height); // Clear after reading
+    // Guard against reading if context is somehow invalid
+    try {
+        const textImageData = ctx.getImageData(0, 0, width, height);
+        ctx.clearRect(0, 0, width, height); // Clear after reading
 
-    // 2. Extract positions
-    const potentialParticles: {x: number, y: number}[] = [];
-    for (let y = 0; y < textImageData.height; y += GAP) {
-      for (let x = 0; x < textImageData.width; x += GAP) {
-        // Alpha channel > 128
-        if (textImageData.data[(y * textImageData.width + x) * 4 + 3] > 128) {
-          potentialParticles.push({ x, y });
+        // 2. Extract positions
+        const potentialParticles: {x: number, y: number}[] = [];
+        for (let y = 0; y < textImageData.height; y += GAP) {
+          for (let x = 0; x < textImageData.width; x += GAP) {
+            // Alpha channel > 128
+            if (textImageData.data[(y * textImageData.width + x) * 4 + 3] > 128) {
+              potentialParticles.push({ x, y });
+            }
+          }
         }
-      }
-    }
 
-    // Shuffle
-    for (let i = potentialParticles.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [potentialParticles[i], potentialParticles[j]] = [potentialParticles[j], potentialParticles[i]];
-    }
+        // Shuffle
+        for (let i = potentialParticles.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [potentialParticles[i], potentialParticles[j]] = [potentialParticles[j], potentialParticles[i]];
+        }
 
-    const count = Math.min(MAX_PARTICLES, potentialParticles.length);
-    for (let i = 0; i < count; i++) {
-      const p = createParticle(potentialParticles[i].x, potentialParticles[i].y);
-      particlesRef.current.push(p);
-      textPositionsRef.current.push({ x: p.x, y: p.y });
+        const count = Math.min(MAX_PARTICLES, potentialParticles.length);
+        for (let i = 0; i < count; i++) {
+          const p = createParticle(potentialParticles[i].x, potentialParticles[i].y);
+          particlesRef.current.push(p);
+          textPositionsRef.current.push({ x: p.x, y: p.y });
+        }
+    } catch (e) {
+        console.error("Failed to init particles:", e);
     }
   }, []);
 
   const toggleMode = useCallback(() => {
     if (modeStateRef.current.isToggling) return;
+    if (!isMountedRef.current) return;
     
     modeStateRef.current.isToggling = true;
     const newMode = !modeStateRef.current.isCircleMode;
@@ -127,12 +141,12 @@ const BioGate: React.FC = () => {
       });
 
       clickabilityTimerRef.current = setTimeout(() => {
-        setIsButtonClickable(true);
+        if (isMountedRef.current) setIsButtonClickable(true);
       }, 600);
 
       // Auto revert
       inactivityTimerRef.current = setTimeout(() => {
-         if (modeStateRef.current.isCircleMode) toggleMode();
+         if (isMountedRef.current && modeStateRef.current.isCircleMode) toggleMode();
       }, 5000);
 
     } else {
@@ -170,7 +184,7 @@ const BioGate: React.FC = () => {
     if (inactivityTimerRef.current && modeStateRef.current.isCircleMode) {
       clearTimeout(inactivityTimerRef.current);
       inactivityTimerRef.current = setTimeout(() => {
-        if (modeStateRef.current.isCircleMode) toggleMode();
+        if (isMountedRef.current && modeStateRef.current.isCircleMode) toggleMode();
       }, 5000);
     }
   }, [toggleMode]);
@@ -187,9 +201,10 @@ const BioGate: React.FC = () => {
   // --- Animation Loop ---
 
   useEffect(() => {
+    isMountedRef.current = true;
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) return;
 
     const animate = () => {
@@ -210,7 +225,8 @@ const BioGate: React.FC = () => {
             const dy = mouseY - p.y;
             const distance = Math.sqrt(dx * dx + dy * dy);
             
-            if (distance < MOUSE_RADIUS) {
+            // Avoid divide by zero if mouse is exactly on particle
+            if (distance < MOUSE_RADIUS && distance > 0.1) {
                 p.isScattered = true;
                 const force = (MOUSE_RADIUS - distance) / MOUSE_RADIUS;
                 const strength = 0.5;
@@ -228,7 +244,6 @@ const BioGate: React.FC = () => {
         if (p.y !== p.baseY) p.y -= (p.y - p.baseY) / 12;
 
         // Draw
-        // Removed scattered color and shadow blur to avoid green light layer effect
         ctx.fillStyle = p.isScattered 
             ? 'rgba(255, 255, 255, 0.95)' 
             : 'rgba(255, 255, 255, 0.6)';
@@ -243,28 +258,47 @@ const BioGate: React.FC = () => {
 
     // Initialize Canvas Size and Particles
     const handleResize = () => {
+        if (!canvas || !isMountedRef.current) return;
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
-        // Wait for fonts to be ready before init
-        document.fonts.ready.then(() => {
-            initParticles(canvas.width, canvas.height, ctx);
-        });
         
-        // If resizing in circle mode, logic resets to text mode or needs complex handling
+        initParticles(canvas.width, canvas.height, ctx);
+        
+        // If resized while in circle mode, reset to text (as initParticles generates text positions)
+        // We trigger toggleMode to ensure state and UI sync up (turning off circle mode)
         if (modeStateRef.current.isCircleMode) {
              toggleMode(); 
         }
     };
 
+    // Initial Setup
     handleResize();
-    window.addEventListener('resize', handleResize);
     
-    // Start loop
+    // Start Loop
     animate();
 
+    // Listeners
+    window.addEventListener('resize', handleResize);
+    
+    // Safety check: Re-initialize when fonts are definitely loaded
+    if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(() => {
+            if (isMountedRef.current) handleResize();
+        }).catch(() => {
+            // Ignore errors if font loading tracking fails
+        });
+    }
+
+    // Fallback: Re-init after a short delay
+    const safetyTimer = setTimeout(() => {
+        if (isMountedRef.current) handleResize();
+    }, 500);
+
     return () => {
+      isMountedRef.current = false;
       window.removeEventListener('resize', handleResize);
       cancelAnimationFrame(animationFrameId.current);
+      clearTimeout(safetyTimer);
     };
   }, [initParticles, toggleMode]);
 

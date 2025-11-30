@@ -28,6 +28,7 @@ const BioGate: React.FC = () => {
   const mouseRef = useRef<{ x: number | null, y: number | null }>({ x: null, y: null });
   const isPointerDownRef = useRef(false);
   const animationFrameId = useRef<number>(0);
+  const hasInitializedRef = useRef(false); // Track if particles are successfully created
   
   // State for rendering UI changes
   const [isCircleMode, setIsCircleMode] = useState(false);
@@ -56,23 +57,22 @@ const BioGate: React.FC = () => {
   });
 
   const initParticles = useCallback((width: number, height: number, ctx: CanvasRenderingContext2D) => {
-    // Safety check to prevent IndexSizeError
+    // Safety check to prevent IndexSizeError or zero-size canvas
     if (width <= 0 || height <= 0) return;
-
-    particlesRef.current = [];
-    textPositionsRef.current = [];
 
     // 1. Draw text to get data
     ctx.fillStyle = 'white';
     // Responsive font size
     const fontSize = Math.min(width * 0.2, 150);
-    ctx.font = `600 ${fontSize}px "Josefin Sans", sans-serif`;
+    // Fallback to Arial if Josefin Sans isn't loaded yet to ensure *something* renders
+    ctx.font = `600 ${fontSize}px "Josefin Sans", "Inter", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     
     // Clear before drawing to ensure clean slate
     ctx.clearRect(0, 0, width, height);
     
+    // Draw Text
     ctx.fillText('SHΞЯVIN™', width / 2, height / 2);
 
     // Guard against reading if context is somehow invalid
@@ -91,17 +91,27 @@ const BioGate: React.FC = () => {
           }
         }
 
-        // Shuffle
-        for (let i = potentialParticles.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [potentialParticles[i], potentialParticles[j]] = [potentialParticles[j], potentialParticles[i]];
-        }
+        // Only update particles if we actually found pixels. 
+        // If 0 pixels found, font likely hasn't loaded or canvas is blank.
+        if (potentialParticles.length > 0) {
+            particlesRef.current = [];
+            textPositionsRef.current = [];
 
-        const count = Math.min(MAX_PARTICLES, potentialParticles.length);
-        for (let i = 0; i < count; i++) {
-          const p = createParticle(potentialParticles[i].x, potentialParticles[i].y);
-          particlesRef.current.push(p);
-          textPositionsRef.current.push({ x: p.x, y: p.y });
+            // Shuffle
+            for (let i = potentialParticles.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [potentialParticles[i], potentialParticles[j]] = [potentialParticles[j], potentialParticles[i]];
+            }
+
+            const count = Math.min(MAX_PARTICLES, potentialParticles.length);
+            for (let i = 0; i < count; i++) {
+                const p = createParticle(potentialParticles[i].x, potentialParticles[i].y);
+                particlesRef.current.push(p);
+                textPositionsRef.current.push({ x: p.x, y: p.y });
+            }
+            
+            // Mark as initialized so we stop forcing retries
+            hasInitializedRef.current = true;
         }
     } catch (e) {
         console.error("Failed to init particles:", e);
@@ -207,10 +217,23 @@ const BioGate: React.FC = () => {
     const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) return;
 
+    let retryFrameCount = 0;
+
     const animate = () => {
       // Fade trail effect
       ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // --- GUARANTEE RENDER LOGIC ---
+      // If particles are empty, it means initialization failed (black screen).
+      // Retry every 10 frames (~160ms) until successful.
+      if (particlesRef.current.length === 0) {
+        retryFrameCount++;
+        if (retryFrameCount > 10) {
+            handleResize(); // Force retry
+            retryFrameCount = 0;
+        }
+      }
 
       const isPointerDown = isPointerDownRef.current;
       const mouseX = mouseRef.current.x || 0;
@@ -225,7 +248,7 @@ const BioGate: React.FC = () => {
             const dy = mouseY - p.y;
             const distance = Math.sqrt(dx * dx + dy * dy);
             
-            // Avoid divide by zero if mouse is exactly on particle
+            // Avoid divide by zero
             if (distance < MOUSE_RADIUS && distance > 0.1) {
                 p.isScattered = true;
                 const force = (MOUSE_RADIUS - distance) / MOUSE_RADIUS;
@@ -259,13 +282,14 @@ const BioGate: React.FC = () => {
     // Initialize Canvas Size and Particles
     const handleResize = () => {
         if (!canvas || !isMountedRef.current) return;
+        
+        // Ensure we always have valid dimensions
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
         
         initParticles(canvas.width, canvas.height, ctx);
         
-        // If resized while in circle mode, reset to text (as initParticles generates text positions)
-        // We trigger toggleMode to ensure state and UI sync up (turning off circle mode)
+        // If resized while in circle mode, reset mode to text
         if (modeStateRef.current.isCircleMode) {
              toggleMode(); 
         }
@@ -280,25 +304,28 @@ const BioGate: React.FC = () => {
     // Listeners
     window.addEventListener('resize', handleResize);
     
-    // Safety check: Re-initialize when fonts are definitely loaded
+    // --- AGGRESSIVE INIT STRATEGY ---
+    // Try to initialize multiple times to catch font loading or layout shifts
+    const attempts = [100, 300, 500, 1000, 2000, 3000];
+    const timers = attempts.map(delay => 
+        setTimeout(() => {
+            if (isMountedRef.current && !hasInitializedRef.current) {
+                handleResize();
+            }
+        }, delay)
+    );
+
     if (document.fonts && document.fonts.ready) {
         document.fonts.ready.then(() => {
             if (isMountedRef.current) handleResize();
-        }).catch(() => {
-            // Ignore errors if font loading tracking fails
         });
     }
-
-    // Fallback: Re-init after a short delay
-    const safetyTimer = setTimeout(() => {
-        if (isMountedRef.current) handleResize();
-    }, 500);
 
     return () => {
       isMountedRef.current = false;
       window.removeEventListener('resize', handleResize);
       cancelAnimationFrame(animationFrameId.current);
-      clearTimeout(safetyTimer);
+      timers.forEach(t => clearTimeout(t));
     };
   }, [initParticles, toggleMode]);
 

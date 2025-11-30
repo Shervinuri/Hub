@@ -1,0 +1,344 @@
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+
+// Constants
+const LOGO_URL = 'https://raw.githubusercontent.com/Shervinuri/Shervinuri.github.io/refs/heads/main/1712259501956.png';
+const MAX_PARTICLES = 7500;
+const MOUSE_RADIUS = 150;
+const PARTICLE_SIZE = 1.8;
+const GAP = 2; // Reduced gap for better text resolution
+
+interface Particle {
+  x: number;
+  y: number;
+  baseX: number;
+  baseY: number;
+  size: number;
+  density: number;
+  isScattered: boolean;
+}
+
+const BioGate: React.FC = () => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  
+  // Refs for animation loop state (mutable, no re-renders)
+  const particlesRef = useRef<Particle[]>([]);
+  const textPositionsRef = useRef<{x: number, y: number}[]>([]);
+  const mouseRef = useRef<{ x: number | null, y: number | null }>({ x: null, y: null });
+  const isPointerDownRef = useRef(false);
+  const animationFrameId = useRef<number>(0);
+  
+  // State for rendering UI changes
+  const [isCircleMode, setIsCircleMode] = useState(false);
+  const [isButtonVisible, setIsButtonVisible] = useState(false);
+  const [isButtonClickable, setIsButtonClickable] = useState(false);
+  
+  // Helper refs for logic that shouldn't trigger re-renders but needs to be accessed in loops
+  const modeStateRef = useRef({
+    isCircleMode: false,
+    isToggling: false
+  });
+  
+  const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clickabilityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // --- Particle Logic ---
+
+  const createParticle = (x: number, y: number): Particle => ({
+    x,
+    y,
+    baseX: x,
+    baseY: y,
+    size: PARTICLE_SIZE,
+    density: (Math.random() * 30) + 10,
+    isScattered: false
+  });
+
+  const initParticles = useCallback((width: number, height: number, ctx: CanvasRenderingContext2D) => {
+    particlesRef.current = [];
+    textPositionsRef.current = [];
+
+    // 1. Draw text to get data
+    ctx.fillStyle = 'white';
+    // Responsive font size
+    const fontSize = Math.min(width * 0.2, 150);
+    ctx.font = `600 ${fontSize}px "Josefin Sans", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('SHΞЯVIN™', width / 2, height / 2);
+
+    const textImageData = ctx.getImageData(0, 0, width, height);
+    ctx.clearRect(0, 0, width, height); // Clear after reading
+
+    // 2. Extract positions
+    const potentialParticles: {x: number, y: number}[] = [];
+    for (let y = 0; y < textImageData.height; y += GAP) {
+      for (let x = 0; x < textImageData.width; x += GAP) {
+        // Alpha channel > 128
+        if (textImageData.data[(y * textImageData.width + x) * 4 + 3] > 128) {
+          potentialParticles.push({ x, y });
+        }
+      }
+    }
+
+    // Shuffle
+    for (let i = potentialParticles.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [potentialParticles[i], potentialParticles[j]] = [potentialParticles[j], potentialParticles[i]];
+    }
+
+    const count = Math.min(MAX_PARTICLES, potentialParticles.length);
+    for (let i = 0; i < count; i++) {
+      const p = createParticle(potentialParticles[i].x, potentialParticles[i].y);
+      particlesRef.current.push(p);
+      textPositionsRef.current.push({ x: p.x, y: p.y });
+    }
+  }, []);
+
+  const toggleMode = useCallback(() => {
+    if (modeStateRef.current.isToggling) return;
+    
+    modeStateRef.current.isToggling = true;
+    const newMode = !modeStateRef.current.isCircleMode;
+    modeStateRef.current.isCircleMode = newMode;
+    
+    // Update React state for UI
+    setIsCircleMode(newMode);
+
+    // Reset Timers
+    if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+    if (clickabilityTimerRef.current) clearTimeout(clickabilityTimerRef.current);
+    setIsButtonClickable(false);
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    if (newMode) {
+      // Switch to Circle
+      setIsButtonVisible(true);
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+      const radius = Math.min(canvas.width, canvas.height) * 0.35;
+
+      particlesRef.current.forEach((p, i) => {
+        const angle = (i / particlesRef.current.length) * Math.PI * 2;
+        p.baseX = centerX + Math.cos(angle) * radius;
+        p.baseY = centerY + Math.sin(angle) * radius;
+      });
+
+      clickabilityTimerRef.current = setTimeout(() => {
+        setIsButtonClickable(true);
+      }, 600);
+
+      // Auto revert
+      inactivityTimerRef.current = setTimeout(() => {
+         if (modeStateRef.current.isCircleMode) toggleMode();
+      }, 5000);
+
+    } else {
+      // Switch to Text
+      setIsButtonVisible(false);
+      particlesRef.current.forEach((p, i) => {
+        if (textPositionsRef.current[i]) {
+            p.baseX = textPositionsRef.current[i].x;
+            p.baseY = textPositionsRef.current[i].y;
+        }
+      });
+    }
+
+    setTimeout(() => {
+      modeStateRef.current.isToggling = false;
+    }, 600);
+  }, []);
+
+  // --- Event Handlers ---
+
+  const handlePointerMove = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    let clientX, clientY;
+    if ('touches' in e) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = (e as React.MouseEvent).clientX;
+      clientY = (e as React.MouseEvent).clientY;
+    }
+    
+    mouseRef.current.x = clientX;
+    mouseRef.current.y = clientY;
+
+    // Reset inactivity timer
+    if (inactivityTimerRef.current && modeStateRef.current.isCircleMode) {
+      clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = setTimeout(() => {
+        if (modeStateRef.current.isCircleMode) toggleMode();
+      }, 5000);
+    }
+  }, [toggleMode]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === 'w') toggleMode();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [toggleMode]);
+
+
+  // --- Animation Loop ---
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const animate = () => {
+      // Fade trail effect
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const isPointerDown = isPointerDownRef.current;
+      const mouseX = mouseRef.current.x || 0;
+      const mouseY = mouseRef.current.y || 0;
+
+      for (let i = 0; i < particlesRef.current.length; i++) {
+        const p = particlesRef.current[i];
+        
+        // Update
+        if (isPointerDown) {
+            const dx = mouseX - p.x;
+            const dy = mouseY - p.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance < MOUSE_RADIUS) {
+                p.isScattered = true;
+                const force = (MOUSE_RADIUS - distance) / MOUSE_RADIUS;
+                const strength = 0.5;
+                p.x -= (dx / distance) * force * p.density * strength;
+                p.y -= (dy / distance) * force * p.density * strength;
+            } else {
+                p.isScattered = false;
+            }
+        } else {
+            p.isScattered = false;
+        }
+
+        // Return to base (easing)
+        if (p.x !== p.baseX) p.x -= (p.x - p.baseX) / 12;
+        if (p.y !== p.baseY) p.y -= (p.y - p.baseY) / 12;
+
+        // Draw
+        // Removed scattered color and shadow blur to avoid green light layer effect
+        ctx.fillStyle = p.isScattered 
+            ? 'rgba(255, 255, 255, 0.95)' 
+            : 'rgba(255, 255, 255, 0.6)';
+        
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      animationFrameId.current = requestAnimationFrame(animate);
+    };
+
+    // Initialize Canvas Size and Particles
+    const handleResize = () => {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        // Wait for fonts to be ready before init
+        document.fonts.ready.then(() => {
+            initParticles(canvas.width, canvas.height, ctx);
+        });
+        
+        // If resizing in circle mode, logic resets to text mode or needs complex handling
+        if (modeStateRef.current.isCircleMode) {
+             toggleMode(); 
+        }
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    
+    // Start loop
+    animate();
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      cancelAnimationFrame(animationFrameId.current);
+    };
+  }, [initParticles, toggleMode]);
+
+  // --- Click Logic ---
+  const clickCountRef = useRef(0);
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleClick = () => {
+    clickCountRef.current += 1;
+    if (clickCountRef.current === 1) {
+        clickTimerRef.current = setTimeout(() => {
+            clickCountRef.current = 0;
+        }, 300);
+    } else if (clickCountRef.current === 2) {
+        if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+        clickCountRef.current = 0;
+        toggleMode();
+    }
+  };
+
+  return (
+    <div 
+      ref={containerRef}
+      className="relative w-full h-full touch-none select-none"
+      onMouseMove={handlePointerMove}
+      onTouchMove={handlePointerMove}
+      onMouseDown={() => { isPointerDownRef.current = true; }}
+      onMouseUp={() => { isPointerDownRef.current = false; }}
+      onMouseLeave={() => { isPointerDownRef.current = false; }}
+      onTouchStart={() => { isPointerDownRef.current = true; }}
+      onTouchEnd={() => { isPointerDownRef.current = false; }}
+      onClick={handleClick}
+    >
+      <canvas
+        ref={canvasRef}
+        className="block absolute top-0 left-0 w-full h-full z-[1]"
+      />
+
+      {/* Enter Button - Invisible Container, Logo Only */}
+      <a
+        href="https://t.me/shervini"
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Enter Site"
+        className={`
+            absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+            w-[160px] h-[160px] flex items-center justify-center z-10
+            transition-all duration-500 ease-in-out
+            ${isButtonVisible ? 'opacity-100 scale-100 visible' : 'opacity-0 scale-75 invisible'}
+            ${isButtonClickable ? 'pointer-events-auto cursor-pointer' : 'pointer-events-none'}
+            hover:scale-110 [perspective:1000px]
+        `}
+        onClick={(e) => e.stopPropagation()} 
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <img 
+            src={LOGO_URL} 
+            alt="Logo" 
+            className="w-full h-full object-contain animate-spin-y" 
+        />
+      </a>
+
+      {/* Hint Text */}
+      <p 
+        className="absolute bottom-5 left-1/2 -translate-x-1/2 font-josefin text-sm tracking-[1.5px] z-[11] whitespace-nowrap bg-clip-text text-transparent animate-sweep pointer-events-none select-none"
+        style={{
+            background: 'linear-gradient(90deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.02))',
+            backgroundSize: '250% 100%'
+        }}
+      >
+        &gt; Dev tip: &gt; "dblclick" isn’t deprecated — it’s underrated ! 
+      </p>
+    </div>
+  );
+};
+
+export default BioGate;
